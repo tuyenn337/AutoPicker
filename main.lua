@@ -1,31 +1,53 @@
 -- Anime Adventures Auto Picker (Delta Executor)
--- Features:
---   1) Picks buff cards by name priority (LAST item in each list = HIGHEST priority)
---   2) Votes for the best weather card (green text = good, red text = bad)
---   3) Built-in diagnostics: executor support check, remote logger, text dump
+-- 1) Picks buff cards by name priority (LAST item in each list = HIGHEST priority)
+-- 2) Votes for the best weather card (green text = good, red text = bad)
+-- 3) Built-in diagnostics: executor support check, remote logger, text dump
 --
--- Set these globals BEFORE loading this file to override the defaults.
+-- Cards that are NOT in a list are never picked (Enemy Speed is intentionally left out).
+-- You can override any list by setting the globals BEFORE loading this file.
 
 local env = getgenv()
 
 env.FocusWave = env.FocusWave or 50
+
+-- Used while wave <= FocusWave
+-- Order: low priority at the TOP, HIGH priority at the BOTTOM
 env.PriorityCards = env.PriorityCards or {
-    "- Cooldown I", "+ Gain 2 Random Effects Tier 1", "- Cooldown II", "- Cooldown III",
-    "+ Range I", "+ Attack I", "+ Attack II", "+ Gain 2 Random Effects Tier 2",
-    "+ Range II", "+ Range III", "+ Attack III", "+ Gain 2 Random Effects Tier 3",
+    -- Debuff cards (only picked when no buff card is available)
+    "+ Random Curses III", "+ Random Curses II", "+ Random Curses I",
+    "+ Gain 2 Random Curses Tier 3", "+ Gain 2 Random Curses Tier 2", "+ Gain 2 Random Curses Tier 1",
+    "+ Explosive Deaths III", "+ Explosive Deaths II", "+ Explosive Deaths I",
+    "+ Spellproof Enemies III", "+ Spellproof Enemies II", "+ Spellproof Enemies I",
+    "+ Enemy Shield III", "+ Enemy Shield II", "+ Enemy Shield I",
+    "+ Enemy Regen III", "+ Enemy Regen II", "+ Enemy Regen I",       -- 2nd choice among debuffs
+    "+ Enemy Health III", "+ Enemy Health II", "+ Enemy Health I",    -- 1st choice among debuffs
+
+    -- Buff cards (always beat every debuff card)
+    "- Cooldown I", "- Cooldown II", "- Cooldown III",
+    "+ Gain 2 Random Effects Tier 1",
+    "+ Range I", "+ Attack I", "+ Attack II",
+    "+ Gain 2 Random Effects Tier 2",
+    "+ Range II", "+ Range III", "+ Attack III",
+    "+ Gain 2 Random Effects Tier 3",
 }
+
+-- Used after FocusWave
 env.Cards = env.Cards or {
+    -- Debuff cards
+    "+ Random Curses III", "+ Random Curses II", "+ Random Curses I",
+    "+ Gain 2 Random Curses Tier 3", "+ Gain 2 Random Curses Tier 2", "+ Gain 2 Random Curses Tier 1",
+    "+ Explosive Deaths III", "+ Explosive Deaths II", "+ Explosive Deaths I",
+    "+ Spellproof Enemies III", "+ Spellproof Enemies II", "+ Spellproof Enemies I",
+    "+ Enemy Shield III", "+ Enemy Shield II", "+ Enemy Shield I",
+    "+ Enemy Regen III", "+ Enemy Regen II", "+ Enemy Regen I",
+    "+ Enemy Health III", "+ Enemy Health II", "+ Enemy Health I",
+
+    -- Buff cards
     "+ Yen I", "+ Yen II", "+ Yen III",
     "+ Boss Damage I", "+ Boss Damage II", "+ Boss Damage III",
-    "- Cooldown I", "- Gain 2 Random Effects Tier 1", "- Cooldown II", "- Cooldown III",
-    "+ Range I", "- Gain 2 Random Effects Tier 2", "+ Attack I", "+ Attack II",
-    "+ Range II", "+ Range III", "+ Attack III", "- Gain 2 Random Effects Tier 3",
-    "+ Enemy Health III", "+ Enemy Health II", "+ Enemy Health I",
-    "+ Gain 2 Random Curses Tier 1", "+ Gain 2 Random Curses Tier 2", "+ Gain 2 Random Curses Tier 3",
-    "+ Enemy Speed I", "+ Explosive Deaths I", "+ Enemy Regen I", "+ Enemy Shield I",
-    "+ Enemy Speed II", "+ Explosive Deaths II", "+ Enemy Shield II", "+ Enemy Regen II",
-    "+ Enemy Speed III", "+ Explosive Deaths III", "+ Enemy Shield III", "+ Enemy Regen III",
-    "+ New Path",
+    "- Cooldown I", "- Cooldown II", "- Cooldown III",
+    "+ Range I", "+ Attack I", "+ Attack II",
+    "+ Range II", "+ Range III", "+ Attack III",
 }
 
 local CONFIG = {
@@ -33,8 +55,8 @@ local CONFIG = {
     ActionCooldown = 5,                  -- seconds to wait after any pick or vote
     Debug = env.AutoPickerDebug ~= false, -- set getgenv().AutoPickerDebug = false to silence logs
     LogRemotes = env.AutoPickerLogRemotes ~= false, -- logs FireServer/InvokeServer calls
-    DumpIntervalSeconds = 10,            -- how often to dump visible texts when nothing matches
-    VoteScreenText = "vote ends in",
+    DumpIntervalSeconds = 10,            -- how often to dump texts when nothing matches
+    ChooseScreenText = "choose a card",  -- text shown on the buff card screen
     CardSuffix = " card",                -- weather cards end with this (e.g. "Windy Card")
 }
 
@@ -86,7 +108,6 @@ local function visibleTexts()
     return out
 end
 
--- Climb up from a label to the nearest button
 local function buttonAbove(from)
     for _ = 1, 8 do
         if not from or from == PlayerGui then return nil end
@@ -96,7 +117,6 @@ local function buttonAbove(from)
     return nil
 end
 
--- Find a button inside a card container (or just above it)
 local function buttonIn(root)
     if root:IsA("GuiButton") then return root end
     for _, o in ipairs(root:GetDescendants()) do
@@ -237,7 +257,7 @@ end
 ---------------------------------------------------------------------
 -- Buff cards by name
 ---------------------------------------------------------------------
-local function buffPick(all)
+local function buffPick(all, chooseScreen)
     local wave
     for _, l in ipairs(all) do
         local n = norm(l.Text):match("wave%s*:?%s*(%d+)")
@@ -259,8 +279,8 @@ local function buffPick(all)
         log("Wave:", wave, "| mode:", usePriority and "Priority" or "Normal", "| picking:", best.Text)
         lastAction = os.clock()
         click(best)
-    else
-        dumpTexts(all)
+    elseif chooseScreen then
+        dumpTexts(all) -- only dump when the card screen is open but nothing matched
     end
 end
 
@@ -273,11 +293,17 @@ task.spawn(function()
         if env.AutoPickerToken ~= myToken then break end -- a newer copy took over
         local ok, err = pcall(function()
             if os.clock() - lastAction < CONFIG.ActionCooldown then return end
-            local all, voting = visibleTexts(), false
+            local all = visibleTexts()
+            local weather, chooseScreen = false, false
             for _, l in ipairs(all) do
-                if norm(l.Text):find(CONFIG.VoteScreenText, 1, true) then voting = true break end
+                if isTitle(l) then weather = true end
+                if norm(l.Text):find(CONFIG.ChooseScreenText, 1, true) then chooseScreen = true end
             end
-            if voting then weatherVote(all) else buffPick(all) end
+            if weather then
+                weatherVote(all)
+            elseif chooseScreen then
+                buffPick(all, true)
+            end
         end)
         if not ok then warn("[AutoPicker] Error:", err) end
     end
